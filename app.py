@@ -3,6 +3,10 @@ import boto3
 from botocore.exceptions import NoCredentialsError, ClientError
 import os
 from werkzeug.utils import secure_filename
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Configuration
 S3_BUCKET = 'alteam-s3-bucket'  # Your bucket name
@@ -14,12 +18,15 @@ app = Flask(__name__)
 app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'D/qi9GfnHMnUGaQY6g9xU5G+Z79FnvaxMJE0T8ee')
 app.config['MAX_CONTENT_LENGTH'] = MAX_FILE_SIZE
 
-# Initialize S3 client with error handling
+# Initialize S3 client with explicit credentials
 try:
     s3 = boto3.client(
         's3',
         region_name=S3_REGION,
-        config=boto3.session.Config(signature_version='s3v4'))
+        aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+        aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
+        config=boto3.session.Config(signature_version='s3v4')
+    )
 except Exception as e:
     print(f"Error initializing S3 client: {str(e)}")
     raise
@@ -68,7 +75,10 @@ def upload_file():
             file,
             S3_BUCKET,
             filename,
-            ExtraArgs={'ACL': 'private'}  # Set appropriate permissions
+            ExtraArgs={
+                'ACL': 'private',  # Set appropriate permissions
+                'ContentType': file.content_type  # Preserve original content type
+            }
         )
         flash(f"✅ File '{filename}' uploaded successfully!", "success")
     except ClientError as e:
@@ -96,6 +106,39 @@ def delete_file():
     
     return redirect('/')
 
+@app.route('/download/<filename>')
+def download_file(filename):
+    try:
+        # Generate a presigned URL for the file (valid for 1 hour)
+        url = s3.generate_presigned_url(
+            'get_object',
+            Params={
+                'Bucket': S3_BUCKET,
+                'Key': filename
+            },
+            ExpiresIn=3600
+        )
+        return redirect(url)
+    except ClientError as e:
+        flash(f"❌ Download failed: {e.response['Error']['Message']}", "danger")
+        return redirect('/')
+    except Exception as e:
+        flash(f"❌ Unexpected error: {str(e)}", "danger")
+        return redirect('/')
+
+@app.route('/preview/<filename>')
+def preview_file(filename):
+    try:
+        # Check if file is an image
+        if filename.lower().endswith(('.png', '.jpg', '.jpeg')):
+            url = f"https://{S3_BUCKET}.s3.{S3_REGION}.amazonaws.com/{filename}"
+            return render_template('preview.html', image_url=url)
+        else:
+            flash("❌ File type cannot be previewed.", "danger")
+            return redirect('/')
+    except Exception as e:
+        flash(f"❌ Preview failed: {str(e)}", "danger")
+        return redirect('/')
+
 if __name__ == '__main__':
-    # Only for development - use production WSGI server for deployment
-    app.run(host='0.0.0.0', port=5000)  # Changed from port 80 to avoid permission issues
+    app.run(host='0.0.0.0', port=5000)
